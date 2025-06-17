@@ -17,10 +17,12 @@ PubSubClient client(espClient);
 // --- Мультиплексоры ---
 #define MUX1_ADDR 0x70
 #define MUX2_ADDR 0x77
-#define MUX_CHANNELS 8
 
 // 10 датчиков по порядку: 0–4 на первом MUX, 0–4 на втором
-Adafruit_VL53L0X sensors[10];
+Adafruit_VL53L0X sensor;
+uint8_t muxAddr[] = { MUX2_ADDR, MUX2_ADDR, MUX2_ADDR, MUX2_ADDR, MUX2_ADDR,
+                      MUX1_ADDR, MUX1_ADDR, MUX1_ADDR, MUX1_ADDR, MUX1_ADDR };
+uint8_t channel[] = {4, 3, 2, 1, 0, 0, 1, 2, 3, 4};
 
 void selectMux(uint8_t muxAddr, uint8_t channel);
 void setup_wifi();
@@ -95,13 +97,11 @@ void sendIdentity() {
 // Настройка датчиков
 void initSensors() {
   for (int i = 0; i < 10; i++) {
-    uint8_t muxAddr = i < 5 ? MUX1_ADDR : MUX2_ADDR;
-    uint8_t channel = i % 5;
-    selectMux(muxAddr, channel);
-    if (!sensors[i].begin()) {
-      Serial.printf("Sensor %d not found\n", i);
+    selectMux(muxAddr[i], channel[i]);
+    if (!sensor.begin()) {
+      Serial.printf("Sensor %d not found\n", i+1);
     } else {
-      Serial.printf("Sensor %d OK\n", i);
+      Serial.printf("Sensor %d OK\n", i+1);
     }
   }
 }
@@ -109,16 +109,14 @@ void initSensors() {
 // Отправка показаний
 void readAndSendSensors() {
   for (int i = 0; i < 10; i++) {
-    uint8_t muxAddr = i < 5 ? MUX1_ADDR : MUX2_ADDR;
-    uint8_t channel = i % 5;
-    selectMux(muxAddr, channel);
+    selectMux(muxAddr[i], channel[i]);
 
     VL53L0X_RangingMeasurementData_t measure;
-    sensors[i].rangingTest(&measure, false);
+    sensor.rangingTest(&measure, false);
 
-    if (measure.RangeStatus == 0) {
+    if (measure.RangeStatus != 4) {
       char topic[64];
-      snprintf(topic, sizeof(topic), "module/%s/sensor/vl53l0x/%d", (WiFi.macAddress()).c_str(), i);
+      snprintf(topic, sizeof(topic), "module/%s/sensor/vl53l0x/%d", (WiFi.macAddress()).c_str(), i+1);
       char payload[16];
       snprintf(payload, sizeof(payload), "%d", measure.RangeMilliMeter);
       client.publish(topic, payload);
