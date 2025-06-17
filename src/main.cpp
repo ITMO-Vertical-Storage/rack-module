@@ -1,18 +1,129 @@
-#include <Arduino.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include "Adafruit_VL53L0X.h"
 
-// put function declarations here:
-int myFunction(int, int);
+#define MODULE_TYPE "rack-module"
+
+// --- WiFi ---
+const char* ssid = "Beeline_MF";
+const char* password = "$@ndr0nix";
+
+// --- MQTT ---
+const char* mqtt_server = "192.168.8.100"; // IP Orange Pi
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// --- Мультиплексоры ---
+#define MUX1_ADDR 0x70
+#define MUX2_ADDR 0x77
+#define MUX_CHANNELS 8
+
+// 10 датчиков по порядку: 0–4 на первом MUX, 0–4 на втором
+Adafruit_VL53L0X sensors[10];
+
+void selectMux(uint8_t muxAddr, uint8_t channel);
+void setup_wifi();
+void reconnect();
+void sendIdentity();
+void initSensors();
+void readAndSendSensors();
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+  Serial.begin(115200);
+  while (!Serial);
+  Serial.println("Start monitor");
+  Wire.begin();
+
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+
+  initSensors();
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  readAndSendSensors();
+  delay(1000);
 }
 
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
+// Функция выбора канала мультиплексора
+void selectMux(uint8_t muxAddr, uint8_t channel) {
+  Wire.beginTransmission(muxAddr);
+  Wire.write(1 << channel);
+  Wire.endTransmission();
+}
+
+// Подключение к WiFi
+void setup_wifi() {
+  delay(1000);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected");
+  Serial.println("\nIP: " + String(WiFi.localIP().toString()));
+  Serial.println("\nMAC: " + String(WiFi.macAddress()));
+}
+
+// Подключение к MQTT
+void reconnect() {
+  while (!client.connected()) {
+    if (client.connect((WiFi.macAddress()).c_str())) {
+      Serial.println("Connected to MQTT");
+      sendIdentity();
+    } else {
+      delay(1000);
+    }
+  }
+}
+
+// Отправка информации о модуле
+void sendIdentity() {
+  String ip = WiFi.localIP().toString();
+  String mac = WiFi.macAddress();
+
+  client.publish(("module/" + mac + "/identity/type").c_str(), MODULE_TYPE);
+  client.publish(("module/" + mac + "/identity/ip").c_str(), ip.c_str());
+}
+
+// Настройка датчиков
+void initSensors() {
+  for (int i = 0; i < 10; i++) {
+    uint8_t muxAddr = i < 5 ? MUX1_ADDR : MUX2_ADDR;
+    uint8_t channel = i % 5;
+    selectMux(muxAddr, channel);
+    if (!sensors[i].begin()) {
+      Serial.printf("Sensor %d not found\n", i);
+    } else {
+      Serial.printf("Sensor %d OK\n", i);
+    }
+  }
+}
+
+// Отправка показаний
+void readAndSendSensors() {
+  for (int i = 0; i < 10; i++) {
+    uint8_t muxAddr = i < 5 ? MUX1_ADDR : MUX2_ADDR;
+    uint8_t channel = i % 5;
+    selectMux(muxAddr, channel);
+
+    VL53L0X_RangingMeasurementData_t measure;
+    sensors[i].rangingTest(&measure, false);
+
+    if (measure.RangeStatus == 0) {
+      char topic[64];
+      snprintf(topic, sizeof(topic), "module/%s/sensor/vl53l0x/%d", (WiFi.macAddress()).c_str(), i);
+      char payload[16];
+      snprintf(payload, sizeof(payload), "%d", measure.RangeMilliMeter);
+      client.publish(topic, payload);
+    }
+
+    delay(50);
+  }
 }
